@@ -47,7 +47,7 @@ def _check(result):
     return result
 
 
-def _restrict_network_sockets():
+def _restrict_network_sockets(*, unix_only=False):
     lib = c.CDLL("libseccomp.so.2")
     lib.seccomp_init.restype = c.c_void_p
     lib.seccomp_rule_add_array.argtypes = [c.c_void_p, c.c_uint32, c.c_int, c.c_uint, c.POINTER(SeccompCompare)]
@@ -59,6 +59,13 @@ def _restrict_network_sockets():
     try:
         socket_call = lib.seccomp_syscall_resolve_name(b"socket")
         deny = 0x00050000 | errno.EACCES
+        if unix_only:
+            comparison = SeccompCompare(0, 1, socket.AF_UNIX, 0)
+            if lib.seccomp_rule_add_array(context, deny, socket_call, 1, c.byref(comparison)) != 0:
+                raise RuntimeError("Could not restrict the terminal to Unix sockets.")
+            if lib.seccomp_load(context) != 0:
+                raise RuntimeError("Could not apply the terminal socket policy.")
+            return
         # Desktop IPC continues through Unix sockets. Internet sockets use TCP only.
         for family in (socket.AF_INET, socket.AF_INET6, socket.AF_PACKET):
             if family == socket.AF_PACKET:
@@ -92,42 +99,44 @@ def _allow_path(ruleset, path, access):
         os.close(descriptor)
 
 
-def _constrain(home, control, chrome, port, proxy_port):
+def apply_sandbox(paths, ports=(), *, unix_only=False):
     abi = _check(_LIBC.syscall(_CREATE_RULESET, 0, 0, 1))
     if abi < 6 or os.uname().machine not in {"x86_64", "aarch64"}:
         raise RuntimeError("Project surfaces require Linux Landlock ABI 6 or newer.")
     rules = Rules(_FS_ACCESS, _BIND | _CONNECT, _SCOPE_IPC)
     descriptor = _check(_LIBC.syscall(_CREATE_RULESET, c.byref(rules), c.sizeof(rules), 0))
     try:
-        for path in (
+        for path, access in paths:
+            _allow_path(descriptor, path, access)
+        for action, number in ports:
+            if number:
+                _check(_LIBC.syscall(_ADD_RULE, descriptor, 2, c.byref(PortRule(action, number)), 0))
+        _check(_LIBC.prctl(38, 1, 0, 0, 0))  # PR_SET_NO_NEW_PRIVS
+        _check(_LIBC.syscall(_RESTRICT_SELF, descriptor, 0))
+        _restrict_network_sockets(unix_only=unix_only)
+    finally:
+        os.close(descriptor)
+
+
+def _constrain(home, control, chrome, port, proxy_port, automation_port=0):
+    paths = [(path, _EXECUTE | _READ | _LIST) for path in (
             "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64", "/usr/libexec", "/usr/local/lib", "/usr/share", "/usr/include",
             "/etc/alternatives", "/etc/fonts", "/etc/ssl", "/etc/X11", "/etc/xdg", "/etc/xpra",
             "/etc/passwd", "/etc/group", "/etc/ld.so.cache", "/etc/localtime", "/etc/mime.types",
             "/etc/hosts", "/etc/nsswitch.conf", "/usr/local/share", "/proc", "/sys",
             "/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/dconf", "/etc/dbus-1", "/etc/libreoffice",
-        ):
-            _allow_path(descriptor, path, _EXECUTE | _READ | _LIST)
-        for path in ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"):
-            _allow_path(descriptor, path, _READ | _WRITE)
-        for path in (home, "/tmp/.X11-unix", "/var/lib/xkb"):
-            _allow_path(descriptor, path, rules.fs)
-        # Xvfb uses a process-owned lock. LibreOffice also creates its local
-        # instance socket in this sticky directory under the viewer's UID.
-        scratch_access = _WRITE | _REMOVE_FILE | _MAKE_FILE
-        if not chrome:
-            scratch_access |= _MAKE_SOCKET
-        _allow_path(descriptor, "/tmp", scratch_access)
-        _allow_path(descriptor, control, _READ | _LIST)
-        if chrome:
-            _allow_path(descriptor, Path(chrome).parent, _EXECUTE | _READ | _LIST)
-        for action, number in ((_BIND, port), (_CONNECT, proxy_port)):
-            if number:
-                _check(_LIBC.syscall(_ADD_RULE, descriptor, 2, c.byref(PortRule(action, number)), 0))
-        _check(_LIBC.prctl(38, 1, 0, 0, 0))  # PR_SET_NO_NEW_PRIVS
-        _check(_LIBC.syscall(_RESTRICT_SELF, descriptor, 0))
-        _restrict_network_sockets()
-    finally:
-        os.close(descriptor)
+    )]
+    paths.extend((path, _READ | _WRITE) for path in ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"))
+    paths.extend((path, _FS_ACCESS) for path in (home, "/tmp/.X11-unix", "/var/lib/xkb"))
+    # Xvfb uses a process-owned lock. LibreOffice also creates its local
+    # instance socket in this sticky directory under the viewer's UID.
+    scratch_access = _WRITE | _REMOVE_FILE | _MAKE_FILE
+    if not chrome:
+        scratch_access |= _MAKE_SOCKET
+    paths.extend((("/tmp", scratch_access), (control, _READ | _LIST)))
+    if chrome:
+        paths.append((Path(chrome).parent, _EXECUTE | _READ | _LIST))
+    apply_sandbox(paths, ((_BIND, port), (_BIND, automation_port), (_CONNECT, proxy_port)))
 
 
 def _office_launch(home: Path, path: Path) -> list[str]:
@@ -158,16 +167,18 @@ def _office_launch(home: Path, path: Path) -> list[str]:
 
 
 def main():
-    mode, raw_uid, raw_port, raw_display, control, chrome, raw_proxy = sys.argv[1:]
+    mode, raw_uid, raw_port, raw_display, control, chrome, raw_proxy, *automation_arg = sys.argv[1:]
     uid, port, display, proxy = map(int, (raw_uid, raw_port, raw_display, raw_proxy))
+    automation = int(automation_arg[0]) if automation_arg else 0
     home = Path(os.environ["HOME"])
     os.setgroups([])
     os.setgid(uid)
     os.setuid(uid)
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
-    _constrain(home, control, chrome, port, proxy)
+    process_limit = 512 if mode == "browser" else 256
+    resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
+    _constrain(home, control, chrome, port, proxy, automation)
     xserver = "Xvfb -screen 0 1280x760x24 -nolisten tcp -auth $XAUTHORITY"
     child = ["startxfce4"]
     if mode == "browser":
@@ -178,6 +189,8 @@ def main():
             f"--proxy-server=http://127.0.0.1:{proxy}", "--proxy-bypass-list=<-loopback>",
             "--start-maximized", "about:blank",
         ]
+        if automation:
+            child[-1:-1] = ["--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={automation}"]
     else:
         bus_socket = home / "run" / "desktop-bus"
         bus_address = f"unix:path={bus_socket}"

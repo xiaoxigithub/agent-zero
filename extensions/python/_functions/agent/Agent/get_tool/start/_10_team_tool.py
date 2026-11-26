@@ -1,5 +1,8 @@
+from helpers import extract_tools, files
 from helpers.extension import Extension
-from helpers.team_access import is_team_chat
+from helpers.team_access import TEAM_EXECUTION_TOOL_ID, TEAM_TOOL_IDS, is_team_chat
+from helpers.tool import Tool
+from helpers.tool_actions import bundled_path
 
 
 class TeamToolResolution(Extension):
@@ -9,21 +12,15 @@ class TeamToolResolution(Extension):
         args = data["args"]
         tool_kwargs = data["kwargs"]
         name = tool_kwargs.get("name", args[1] if len(args) > 1 else "")
-        tool = None
+        tool_id = TEAM_TOOL_IDS.get(name)
+        if not tool_id:
+            data["result"] = None
+            return
         if name == "response":
-            from plugins._goal.tools.response import ResponseTool
-
-            tool = ResponseTool
-        elif name == "goal":
-            from plugins._goal.tools.goal import GoalTool
-
-            tool = GoalTool
-        elif name == "text_editor":
-            from plugins._text_editor.tools.text_editor import TextEditor
-
-            tool = TextEditor
-        elif name == "memory":
-            from plugins._memory.tools.memory import MemoryTool
-
-            tool = MemoryTool
-        data["result"] = tool(*args, **tool_kwargs) if tool else None
+            path = "plugins/_goal/tools/response.py"
+        elif tool_id == TEAM_EXECUTION_TOOL_ID:
+            path = "plugins/_code_execution/helpers/project_terminal_tool.py"
+        else:
+            path = bundled_path(tool_id)
+        classes = extract_tools.load_classes_from_file(files.get_abs_path(path), Tool)
+        data["result"] = classes[0](*args, **tool_kwargs) if classes else None

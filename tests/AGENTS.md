@@ -18,6 +18,8 @@
 - Tests must not require real API keys, network-only services, private user data, or local `usr/` runtime state. Manual provider demos must guard model creation and requests behind their executable entry point so collection never runs them.
 - Team storage and occupancy tests create isolated SQLite databases and use controlled asyncio coroutines to prove races, revocation, teardown and replay without a model service.
 - Team Browser network tests stub the resolvers to check that optional host-proxy routing still selects a validated numeric public address.
+- Team tool registration tests check native schemas, bundled dispatch paths and project policy shared by the Terminal alias and native execution name.
+- Team Writer and skills tests verify scoped package writes, revision conflicts, grant changes during rendering, and the skill name arguments used by model calls.
 - Team prompt-rendering tests verify trusted directives and literal substitutions in text and JSON templates.
 - Root `pytest.ini` selects `tests` and `plugins` with importlib import mode; root `conftest.py` keeps `tests/` importable and ignores plugin API handler modules whose names match `test_*.py`.
 - Tests that reimport project modules under stubs, swap `files._base_dir`, or populate extension/plugin caches must restore them so later test files see pristine modules and caches.

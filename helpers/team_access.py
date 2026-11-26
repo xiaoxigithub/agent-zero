@@ -23,11 +23,23 @@ CHAT_CREATOR_ID = "team_creator_id"
 CHAT_DRAFT_AT = "team_draft_at"
 CHAT_STARTED = "team_started"
 _DRAFT_TTL = 1800
+TEAM_EXECUTION_TOOL_ID = "plugin:_code_execution:code_execution_tool"
+TEAM_EXECUTION_RUNTIMES = ("terminal", "python", "nodejs")
+TEAM_OFFICE_TOOL_ID = "plugin:_office:office_artifact"
+TEAM_OFFICE_ACTIONS = ("create", "open", "read", "edit", "inspect", "status")
 TEAM_TOOL_IDS = {
     "response": "local:response",
     "goal": "plugin:_goal:goal",
     "text_editor": "plugin:_text_editor:text_editor",
     "memory": "plugin:_memory:memory",
+    "office_artifact": TEAM_OFFICE_TOOL_ID,
+    "browser": "plugin:_browser:browser",
+    "terminal": TEAM_EXECUTION_TOOL_ID,
+    "code_execution_tool": TEAM_EXECUTION_TOOL_ID,
+    "skills_tool": "local:skills_tool",
+    "vision_load": "local:vision_load",
+    "wait": "plugin:_wait:wait",
+    "search_engine": "plugin:_search_engine:search_engine",
 }
 
 # Both the operation and its resource must be permitted. Individual handlers resolve the resource.

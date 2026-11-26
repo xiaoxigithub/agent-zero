@@ -61,11 +61,26 @@ docker compose -p agent-zero-native-team-qa \
 | --- | --- |
 | 平台管理 | 管理员管理全局配置、插件、模型凭据和连接，以及实例级桌面与浏览器。 |
 | 项目和聊天 | 已有明确原生项目归属的聊天自动共享。无项目和归属不明的历史保留原归属。原生历史随项目读取，审计正文仍通过独立权限追踪。 |
-| Agent 工具 | Response、Goal、原生 Text Editor 和 Memory。文本工具只处理当前项目内的相对路径，覆盖及补丁对照最近读取的修订。 |
+| Agent 工具 | Response、Goal、Text Editor、Memory、Browser、Terminal、Skills、Office Writer、Wait、Web Search，以及有图像模型时的 Vision。文件工具使用当前项目内的相对路径。修改前读取当前修订。 |
 | 项目 Browser 和 Desktop | 每个账号在每个项目有独立的 Linux 图形会话。Browser 通过公共网络代理访问网站。Desktop 的项目文档通过带版本检查的保存操作发布。宿主内核需支持 Linux Landlock ABI 6 及以上。 |
 | 记忆和任务 | 每项目独立索引。知识索引手动重建，并读取项目知识目录中的 UTF-8 文本。手动任务使用发起成员身份，到期任务使用创建者当前授权。 |
 
 项目文件与索引通过受控接口访问。容器内管理员、Docker 主机管理员及备份操作者处于运行环境的管理权限范围内。
+
+### 原生工具兼容范围
+
+团队聊天的 Browser 操作当前执行账号在该项目的原生 Browser，上传取自授权项目。截图返回当前聊天可用的 Vision 引用。项目 Terminal 同时接受 `terminal` 和 `code_execution_tool`，每次执行使用独立的临时目录。用 `files` 加入项目文件，用 `skill` 载入项目可用技能的脚本。公开 HTTP 和 HTTPS 请求可使用 `curl` 或 Python 标准库。CMS 等技能如需令牌配置，先将获授权的配置放入相应项目，再以输入文件传给脚本。实例级配置留在平台管理员的运行范围。
+
+团队聊天可用 `skills_tool` 列出技能，再以列表中的准确 `skill_name` 加载，例如 `writer-documents`。团队聊天中的 `office_artifact` 支持在项目 Files 创建、读取和编辑 ODT、DOCX。修改时传入最近一次读取返回的 `revision`。生成文件可在项目 Files 下载或从项目 Desktop 打开。
+
+| 原生入口 | 团队版范围 |
+| --- | --- |
+| 项目资料、记忆、浏览器、终端和技能 | 项目会话工具按当前运行人的授权使用。Terminal 文件结果通过项目 Editor 或 Files 发布 |
+| Office | 团队聊天支持 ODT、DOCX 的创建、读取、文本编辑和文件信息查询。格式转换和版本恢复属于平台 Office 流程 |
+| 定时任务、Desktop、审计 | 对应的项目页面入口。Agent 内的 Scheduler、Document Query 和跨会话编排需独立的项目适配 |
+| 全局通知、代理配置、MCP 与连接器、远程执行和 Host Browser | 实例或远程连接范围，按平台管理和连接权限使用 |
+
+工具回归可从原生成员聊天执行一次公开页面浏览、一次项目文件读取和一次带合成令牌的 HTTP 读取。然后以另一账号核对项目范围，并检查失败请求与运行结束后的工具清理。
 
 ## 备份、升级与回滚
 

@@ -8,3 +8,4 @@
 - Team changes recorded by `activity()` include the actor and project. File names, contents, and settings stay in native storage.
 - Verify two members loading and saving the same files and project header, stale revisions, cross-project authorization and rejected links.
 - Files, Editor and chat attachments use pinned workspace descriptors. Chat attachments have a run-specific directory. File moves use a no-overwrite rename. Empty folders can be removed after version verification.
+- `open_path_directory()` pins each visible directory component for callers staging native project or permitted skill inputs.

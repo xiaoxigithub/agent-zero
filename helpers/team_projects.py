@@ -113,18 +113,22 @@ def file_parts(path: object, *, allow_root: bool = False) -> tuple[str, ...]:
 
 
 @contextmanager
+def open_path_directory(root, parts=()):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as stack:
+        directory = os.dup(root) if isinstance(root, int) else os.open(root, flags)
+        stack.callback(os.close, directory)
+        for part in parts:
+            directory = os.open(part, flags, dir_fd=directory)
+            stack.callback(os.close, directory)
+        yield directory
+
+
 def open_directory(name: str, area: str, parts: tuple[str, ...]):
     if not isinstance(area, str) or area not in AREAS:
         raise ValueError("Unknown project file area.")
     root = Path(projects.get_projects_parent_folder()).resolve()
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    with ExitStack() as stack:
-        directory = os.open(root, flags)
-        stack.callback(os.close, directory)
-        for part in (name, *AREAS[area], *parts):
-            directory = os.open(part, flags, dir_fd=directory)
-            stack.callback(os.close, directory)
-        yield directory
+    return open_path_directory(root, (name, *AREAS[area], *parts))
 
 
 def open_file(directory: int, name: str):

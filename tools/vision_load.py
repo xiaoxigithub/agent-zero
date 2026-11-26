@@ -14,6 +14,7 @@ from helpers import (
 )
 from helpers.tool import Response, Tool
 from helpers.strings import truncate_text
+from helpers.team_access import is_team_chat
 from plugins._model_config.helpers.model_config import (
     build_vision_model,
     get_chat_model_config,
@@ -52,6 +53,36 @@ class VisionLoad(Tool):
         query: str = "",
         **kwargs,
     ) -> Response:
+
+        if is_team_chat(getattr(self.agent, "context", None)):
+            from helpers import projects, team_projects, team_runs
+
+            _, scope = team_runs.executing_scope(self.agent.context)
+            name = projects.get_context_project_name(self.agent.context)
+            project_paths = [paths] if isinstance(paths, str) else paths
+            if not isinstance(project_paths, list):
+                return Response(message="Choose project-relative image paths or a Browser screenshot.", break_loop=False)
+            scoped_paths = []
+            with team_projects.project_lock(name, scope):
+                for path in project_paths[:12]:
+                    if ephemeral_images.is_ref(path):
+                        scoped_paths.append(path)
+                        continue
+                    try:
+                        parts = team_projects.file_parts(path)
+                        mime, _ = guess_type(parts[-1])
+                        if mime not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+                            continue
+                        with team_projects.open_directory(name, "workspace", parts[:-1]) as directory:
+                            with team_projects.open_file(directory, parts[-1]) as source:
+                                payload = source.read(8 * 1024**2 + 1)
+                        if payload and len(payload) <= 8 * 1024**2:
+                            scoped_paths.append(ephemeral_images.put_image_bytes(
+                                context_id=self._context_id(), mime=mime, payload=payload, name=parts[-1],
+                            ))
+                    except (OSError, ValueError):
+                        continue
+            paths = scoped_paths
 
         self.images_dict = {}
         self.loaded_paths: list[str] = []

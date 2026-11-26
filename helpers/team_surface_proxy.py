@@ -84,6 +84,20 @@ class WebProxy(socketserver.StreamRequestHandler):
     timeout = 20
     rbufsize = 0
 
+    def public_socket(self, host, port):
+        family, kind, protocol, _, address = public_address(host, port, self.server.resolver)
+        upstream_socket = self.server.upstream_socket
+        upstream = socket.socket(socket.AF_UNIX) if upstream_socket else socket.socket(family, kind, protocol)
+        try:
+            upstream.settimeout(15)
+            upstream.connect(upstream_socket or address)
+            if upstream_socket:
+                _connect_tunnel(upstream, address)
+            return upstream
+        except BaseException:
+            upstream.close()
+            raise
+
     def handle(self):
         try:
             method, target, version = self.rfile.readline(8193).decode("ascii").strip().split()
@@ -104,14 +118,7 @@ class WebProxy(socketserver.StreamRequestHandler):
                 key, _, _ = line.partition(b":")
                 if key.lower() not in {b"connection", b"proxy-connection", b"proxy-authorization", b"upgrade"}:
                     headers.append(line)
-            family, kind, protocol, _, address = public_address(url.hostname, port, self.server.resolver)
-            upstream_socket = self.server.upstream_socket
-            upstream = socket.socket(socket.AF_UNIX) if upstream_socket else socket.socket(family, kind, protocol)
-            with upstream:
-                upstream.settimeout(15)
-                upstream.connect(upstream_socket or address)
-                if upstream_socket:
-                    _connect_tunnel(upstream, address)
+            with self.public_socket(url.hostname, port) as upstream:
                 if connect:
                     self.wfile.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 else:
@@ -127,11 +134,69 @@ class WebProxy(socketserver.StreamRequestHandler):
                 pass
 
 
-class ProjectWebProxy(socketserver.ThreadingTCPServer):
+class TerminalProxy(WebProxy):
+    def _read_exact(self, size):
+        result = bytearray()
+        while len(result) < size:
+            chunk = self.rfile.read(size - len(result))
+            if not chunk:
+                raise ValueError("Incomplete SOCKS request.")
+            result.extend(chunk)
+        return bytes(result)
+
+    def handle(self):
+        try:
+            socks = self.connection.recv(1, socket.MSG_PEEK) == b"\x05"
+        except OSError:
+            return
+        if not socks:
+            return super().handle()
+        try:
+            _, count = self._read_exact(2)
+            if 0 not in self._read_exact(count):
+                self.wfile.write(b"\x05\xff")
+                return
+            self.wfile.write(b"\x05\x00")
+            version, command, reserved, address_type = self._read_exact(4)
+            if (version, command, reserved) != (5, 1, 0):
+                raise ValueError("Only SOCKS CONNECT is supported.")
+            if address_type == 3:
+                host = self._read_exact(self._read_exact(1)[0]).decode("ascii")
+            elif address_type in {1, 4}:
+                host = str(ipaddress.ip_address(self._read_exact(4 if address_type == 1 else 16)))
+            else:
+                raise ValueError("Unsupported SOCKS address.")
+            port = int.from_bytes(self._read_exact(2), "big")
+            upstream = self.public_socket(host, port)
+        except (OSError, ValueError, UnicodeError):
+            try:
+                self.wfile.write(b"\x05\x01\x00\x01" + bytes(6))
+            except OSError:
+                pass
+            return
+        with upstream:
+            try:
+                self.wfile.write(b"\x05\x00\x00\x01" + bytes(6))
+                relay_streams(self.connection, upstream)
+            except OSError:
+                pass
+
+
+class _ProjectProxy:
     daemon_threads = True
 
-    def __init__(self):
+    def __init__(self, address, handler=WebProxy):
         self.upstream_socket = os.environ.get("A0_TEAM_BROWSER_PROXY_SOCKET", "")
         self.resolver = os.environ.get("A0_TEAM_BROWSER_DNS_HTTPS", "") if self.upstream_socket else ""
-        super().__init__(("127.0.0.1", 0), WebProxy)
+        super().__init__(address, handler)
         threading.Thread(target=self.serve_forever, daemon=True, name="project-browser-proxy").start()
+
+
+class ProjectWebProxy(_ProjectProxy, socketserver.ThreadingTCPServer):
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0))
+
+
+class ProjectUnixWebProxy(_ProjectProxy, socketserver.ThreadingUnixStreamServer):
+    def __init__(self, socket_path):
+        super().__init__(socket_path, TerminalProxy)

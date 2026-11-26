@@ -14,7 +14,7 @@
 
 - Shared conversations resolve the bundled Goal tool and goal-aware response. Slash script discovery is bypassed for team conversations.
 
-- Team conversations resolve the approved response, text editor and memory names directly to their bundled tools. Keep this lookup aligned with the team policy and both chat transports.
+- Team conversations resolve registered names through the team tool identities. The terminal alias and native code execution name dispatch to the project terminal, and the response remains goal-aware. Keep dispatch aligned with both model transports and the team policy.
 - Team `AgentContext.communicate` and `run_task` hooks require a matching durable run reservation. The task wrapper finalizes that reservation after the actual turn exits.
 - The team `Agent.hist_add_user_message/end` hook saves native history before the provider call, including input accepted through intervention.
 

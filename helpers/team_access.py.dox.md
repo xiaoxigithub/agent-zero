@@ -8,6 +8,8 @@
 - `is_team_chat_id()` lets legacy chat operations check the existing context before side effects.
 - Member HTTP route lists define the current browser surface. Endpoint handlers check the requested project or chat separately.
 - `TEAM_TOOL_IDS` binds team capabilities to reviewed bundled implementations for discovery, policy and dispatch.
+- Team Browser and execution resolve to project runtimes. The `terminal` alias shares the standard code execution policy ID.
+- Team Office shares the bundled Office capability ID and advertises only the actions implemented for project Writer documents.
 - `member_webui_manifest()` selects core message renderers and reviewed native assets. It always includes the native Chats folder view and the Memory and Scheduled Tasks shortcuts for members. Their endpoints independently apply project scope.
 
 ## Contracts

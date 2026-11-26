@@ -6,8 +6,9 @@ from typing import List
 
 from helpers.tool import Tool, Response
 from helpers.strings import truncate_text
-from helpers import skills as skills_helper
+from helpers import files, skills as skills_helper
 from helpers.print_style import PrintStyle
+from helpers.team_access import is_team_chat
 
 
 DATA_NAME_LOADED_SKILLS = skills_helper.CONTEXT_DATA_NAME_LOADED_SKILLS
@@ -50,8 +51,16 @@ class SkillsTool(Tool):
     def _normalize_skill_name(skill_name: str) -> str:
         skill_name = skill_name.strip()
         if skill_name.startswith("**") and skill_name.endswith("**"):
-            skill_name = skill_name[2:-2]
-        return skill_name.strip()
+            skill_name = skill_name[2:-2].strip()
+        if skill_name.startswith("@[skill/") and skill_name.endswith("]"):
+            skill_name = skill_name[len("@[skill/"):-1].strip()
+        return skill_name
+
+    def _current_skill_name(self, **kwargs) -> str:
+        return self._normalize_skill_name(str(
+            kwargs.get("skill_name") or self.args.get("skill_name")
+            or kwargs.get("name") or self.args.get("name") or ""
+        ))
 
     def get_log_object(self):
         return self.agent.context.log.log(
@@ -65,17 +74,13 @@ class SkillsTool(Tool):
     def get_heading(self):
         action = self._current_action()
         if action == "load":
-            skill_name = self._normalize_skill_name(
-                str(self.args.get("skill_name") or "")
-            )
+            skill_name = self._current_skill_name()
             text = f"Loading skill: {truncate_text(skill_name, 60)}" if skill_name else "Loading skill"
         elif action == "search":
             query = str(self.args.get("query") or "").strip()
             text = f"Searching skills: {truncate_text(query, 60)}" if query else "Searching skills"
         elif action == "read_file":
-            skill_name = self._normalize_skill_name(
-                str(self.args.get("skill_name") or "")
-            )
+            skill_name = self._current_skill_name()
             file_path = str(self.args.get("file_path") or "").strip()
             target = f"{skill_name}/{file_path}" if skill_name and file_path else file_path or skill_name
             text = f"Reading skill: {truncate_text(target, 60)}" if target else "Reading skill"
@@ -88,9 +93,7 @@ class SkillsTool(Tool):
             await super().before_execution(**kwargs)
             return
 
-        skill_name = self._normalize_skill_name(
-            str(kwargs.get("skill_name") or self.args.get("skill_name") or "")
-        )
+        skill_name = self._current_skill_name(**kwargs)
         label = f"{self.name} action {self._current_action(**kwargs)}"
         if skill_name:
             PrintStyle(
@@ -112,9 +115,7 @@ class SkillsTool(Tool):
         action = self._current_action(**kwargs)
 
         query = str(kwargs.get("query") or self.args.get("query") or "").strip()
-        skill_name = self._normalize_skill_name(
-            str(kwargs.get("skill_name") or self.args.get("skill_name") or "")
-        )
+        skill_name = self._current_skill_name(**kwargs)
         file_path = str(
             kwargs.get("file_path") or self.args.get("file_path") or ""
         ).strip()
@@ -125,6 +126,8 @@ class SkillsTool(Tool):
             self.args["action"] = action
 
         try:
+            if is_team_chat(getattr(self.agent, "context", None)):
+                return self._execute_project(action, query, skill_name, file_path)
             if action == "list":
                 return Response(message=self._list(), break_loop=False)
             if action == "search":
@@ -148,6 +151,47 @@ class SkillsTool(Tool):
             Exception
         ) as e:  # keep tool robust; return error instead of crashing loop
             return Response(message=f"Error in skills_tool: {e}", break_loop=False)
+
+    def _execute_project(self, action, query, name, path):
+        from helpers import team_projects, team_runs
+
+        team_runs.executing_scope(self.agent.context)
+        if action in {"list", "search"}:
+            needle = query.casefold()
+            catalog = skills_helper.list_skill_catalog(agent=self.agent, project_scope=True)
+            matches = [
+                f"- {entry['name']}: {entry['description'][:200]}"
+                for entry in catalog if not entry["hidden"] and (
+                    action == "list" or needle in (entry["name"] + " " + entry["description"]).casefold()
+                )
+            ]
+            return Response(message="\n".join(matches[:50]) or "No matching project skills.", break_loop=False)
+        if action not in {"load", "read_file"}:
+            return Response(message="Choose list, search, load or read_file.", break_loop=False)
+        if not name:
+            return Response(message=f"Supply skill_name for {action}. Use list to see available skills.", break_loop=False)
+        entry = skills_helper.project_skill(name, self.agent)
+        if not entry:
+            return Response(message="Select a skill available in this project.", break_loop=False)
+        if action == "load":
+            content = skills_helper.load_skill_for_agent(entry["path"], self.agent)
+            if content.startswith("Error:"):
+                return Response(message=content, break_loop=False)
+            skills_helper.add_loaded_skill_name(self.agent, entry["name"], limit=max_loaded_skills())
+            return Response(message=content, break_loop=False, additional={
+                "skill_instructions": {
+                    "name": entry["name"], "path": entry["path"], "source": "skills_tool:load",
+                    "content_included": True,
+                },
+            })
+        parts = team_projects.file_parts(path)
+        if Path(parts[-1]).suffix.lower() not in {".md", ".txt"}:
+            raise ValueError("Choose a Markdown or text reference in this skill.")
+        root = Path(files.fix_dev_path(entry["path"]))
+        with team_projects.open_path_directory(root, parts[:-1]) as directory:
+            with team_projects.open_file(directory, parts[-1]) as source:
+                text = source.read(24_000).decode("utf-8", errors="replace")
+        return Response(message=text, break_loop=False)
 
     def _list(self) -> str:
         skills = skills_helper.list_skills(

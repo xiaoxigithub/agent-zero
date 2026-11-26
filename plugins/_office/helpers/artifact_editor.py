@@ -52,14 +52,12 @@ def read_artifact(doc: dict[str, Any], max_chars: int = 12000) -> dict[str, Any]
     ext = str(doc["extension"]).lower()
     if ext == "md":
         raise ValueError("Office artifact reads are not available for Markdown; use text_editor.")
-    if ext == "odt":
-        content = _read_odt(path)
-    elif ext == "ods":
+    if ext in {"odt", "docx"}:
+        return read_writer_artifact(path, ext, max_chars)
+    if ext == "ods":
         content = _read_ods(path)
     elif ext == "odp":
         content = _read_odp(path)
-    elif ext == "docx":
-        content = _read_docx(path)
     elif ext == "xlsx":
         content = _read_xlsx(path)
     elif ext == "pptx":
@@ -70,8 +68,28 @@ def read_artifact(doc: dict[str, Any], max_chars: int = 12000) -> dict[str, Any]
     return _trim_payload(content, max_chars=max_chars)
 
 
-def edit_artifact(
-    doc: dict[str, Any],
+def read_writer_artifact(source: Path | io.BytesIO, extension: str, max_chars: int) -> dict[str, Any]:
+    readers = {"odt": _read_odt, "docx": _read_docx}
+    return _trim_payload(readers[extension](source), max_chars=max_chars)
+
+
+def edit_artifact(doc: dict[str, Any], *args: Any, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply a direct saved edit to a registered Office artifact."""
+    before = Path(doc["path"]).read_bytes()
+    updated, payload = render_artifact_edit(before, str(doc["extension"]).lower(), *args, **kwargs)
+    if payload["changed"]:
+        doc = document_store.replace_document_bytes(
+            doc["file_id"], updated, actor="office_artifact:edit",
+            invalidate_sessions=bool(kwargs.get("invalidate_sessions", False)),
+        )
+        _refresh_open_office_sessions(doc["file_id"])
+    payload["preview"] = read_artifact(doc, max_chars=int(kwargs.get("preview_chars") or 4000))
+    return doc, payload
+
+
+def render_artifact_edit(
+    before: bytes,
+    ext: str,
     operation: str = "",
     content: str = "",
     find: str = "",
@@ -82,10 +100,8 @@ def edit_artifact(
     chart: Any = None,
     slides: Any = None,
     **kwargs: Any,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Apply a direct saved edit to an Office artifact and return updated metadata."""
-    path = Path(doc["path"])
-    ext = str(doc["extension"]).lower()
+) -> tuple[bytes, dict[str, Any]]:
+    """Render a structured edit without registering documents or publishing files."""
     operation, content, find, replace, cells, rows, chart, slides, kwargs = _normalize_edit_inputs(
         operation=operation,
         content=content,
@@ -100,9 +116,7 @@ def edit_artifact(
     op = normalize_operation(operation, content=content, find=find, cells=cells, rows=rows, chart=chart, slides=slides)
     if op in {"append_text", "prepend_text"} and content == "":
         raise ValueError(f"content is required for {op}")
-    before = path.read_bytes()
-
-    invalidate_sessions = bool(kwargs.pop("invalidate_sessions", False))
+    kwargs.pop("invalidate_sessions", None)
     if ext == "md":
         raise ValueError("Office artifact edits are not available for Markdown; use text_editor.")
     elif ext == "odt":
@@ -114,35 +128,19 @@ def edit_artifact(
     elif ext == "docx":
         updated, details = _edit_docx(before, op, content=content, find=find, replace=replace, **kwargs)
     elif ext == "xlsx":
-        updated, details = _edit_xlsx(path, op, content=content, find=find, replace=replace, sheet=sheet, cells=cells, rows=rows, chart=chart, **kwargs)
+        updated, details = _edit_xlsx(before, op, content=content, find=find, replace=replace, sheet=sheet, cells=cells, rows=rows, chart=chart, **kwargs)
     elif ext == "pptx":
         updated, details = _edit_pptx(before, op, content=content, find=find, replace=replace, slides=slides, **kwargs)
     else:
         raise ValueError(f"Direct edit is not available for .{ext}.")
 
-    changed = updated != before
-    updated_doc = (
-        document_store.replace_document_bytes(
-            doc["file_id"],
-            updated,
-            actor="office_artifact:edit",
-            invalidate_sessions=invalidate_sessions,
-        )
-        if changed
-        else doc
-    )
-    if changed:
-        _refresh_open_office_sessions(updated_doc["file_id"])
-    preview = read_artifact(updated_doc, max_chars=int(kwargs.get("preview_chars") or 4000))
-    payload = {
+    return updated, {
         "ok": True,
         "action": "edit",
         "operation": op,
-        "changed": changed,
+        "changed": updated != before,
         **details,
-        "preview": preview,
     }
-    return updated_doc, payload
 
 
 def _normalize_edit_inputs(
@@ -333,8 +331,8 @@ def normalize_operation(
     raise ValueError("operation is required")
 
 
-def _read_odt(path: Path) -> dict[str, Any]:
-    root = _odf_content_root(path)
+def _read_odt(source: Path | io.BytesIO) -> dict[str, Any]:
+    root = _odf_content_root(source)
     paragraphs = _odf_text_lines(root)
     headings = [
         "".join(node.itertext()).strip()
@@ -392,8 +390,8 @@ def _read_odp(path: Path) -> dict[str, Any]:
     }
 
 
-def _read_docx(path: Path) -> dict[str, Any]:
-    with zipfile.ZipFile(path) as archive:
+def _read_docx(source: Path | io.BytesIO) -> dict[str, Any]:
+    with zipfile.ZipFile(source) as archive:
         xml = archive.read("word/document.xml")
     root = ET.fromstring(xml)
     paragraphs = []
@@ -608,7 +606,7 @@ def _edit_ods(
 
 
 def _edit_xlsx(
-    path: Path,
+    before: bytes,
     op: str,
     *,
     content: str = "",
@@ -623,7 +621,7 @@ def _edit_xlsx(
     if op not in {"set_text", "set_rows", "append_text", "append_rows", "set_cells", "replace_text", "delete_text", "create_chart"}:
         raise ValueError(f"Unsupported XLSX operation: {op}")
     openpyxl = _require_openpyxl()
-    workbook = openpyxl.load_workbook(path)
+    workbook = openpyxl.load_workbook(io.BytesIO(before))
     worksheet = _worksheet(workbook, sheet)
 
     details: dict[str, Any] = {"sheet": worksheet.title}
@@ -666,7 +664,7 @@ def _edit_xlsx(
                 break
         details["replacements"] = count
         if count == 0:
-            return path.read_bytes(), details
+            return before, details
     elif op == "create_chart":
         chart_details = []
         for chart_spec in _normalize_chart_specs(chart, kwargs):
@@ -1476,8 +1474,8 @@ def _zip_member(data: bytes, name: str) -> bytes:
         return archive.read(name)
 
 
-def _odf_content_root(path: Path) -> ET.Element:
-    with zipfile.ZipFile(path) as archive:
+def _odf_content_root(source: Path | io.BytesIO) -> ET.Element:
+    with zipfile.ZipFile(source) as archive:
         return ET.fromstring(archive.read("content.xml"))
 
 

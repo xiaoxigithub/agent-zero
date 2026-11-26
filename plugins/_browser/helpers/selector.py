@@ -15,6 +15,12 @@ DOCKER_BROWSER_RECOVERY_HELP = (
 
 
 async def get_tool_runtime(agent: Any):
+    from helpers.team_access import is_team_chat
+
+    if is_team_chat(agent.context):
+        from helpers.team_browser import get_runtime
+
+        return await get_runtime(agent.context)
     context_id = str(agent.context.id)
     config = get_browser_config(agent=agent)
     backend = str(config.get(RUNTIME_BACKEND_KEY) or "container").strip()

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from helpers.strings import truncate_text
+from helpers.team_access import is_team_chat
 from helpers.tool import Response, Tool
 from plugins._office.helpers import artifact_editor, document_store, libreoffice
 
@@ -36,6 +37,14 @@ class OfficeArtifact(Tool):
         **kwargs: Any,
     ) -> Response:
         action = str(action or "status").strip().lower().replace("-", "_")
+        if is_team_chat(getattr(self.agent, "context", None)):
+            from plugins._office.helpers import project_office
+
+            return await project_office.execute(self.agent, action, {
+                **kwargs, "kind": kind, "title": title, "format": format, "content": content,
+                "path": path, "file_id": file_id, "operation": operation, "find": find,
+                "replace": replace, "max_chars": max_chars,
+            })
         open_in_canvas = _truthy(
             open_in_canvas
             or kwargs.get("open_canvas")

@@ -15,6 +15,7 @@
 - Shared chats resolve the existing Goal prompt alongside Response and the project-specific text and memory tool prompts.
 
 - Team conversations exclude MCP tool catalogs. Text and Responses transports use the same bundled team tool prompts for discovery.
+- The team prompt includes scoped image loading when the model configuration offers vision. Both project terminal names use the scoped command and input-file schemas.
 
 - Build local function tools from enabled `agent.system.tool.*.md` prompt files and include `vision_load` when either Main native vision or the effective preset's Vision Model enables the canonical vision prompt.
 - Discover local prompt files through `helpers.subagents.get_paths`; this module

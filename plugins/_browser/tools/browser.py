@@ -10,6 +10,7 @@ from typing import Any
 from helpers import files
 from helpers.print_style import PrintStyle
 from helpers.strings import truncate_text
+from helpers.team_access import is_team_chat
 from helpers.tool import Response, Tool
 from plugins._browser.helpers.config import activate_browser_model
 from plugins._browser.helpers.selector import get_tool_runtime
@@ -78,10 +79,12 @@ class Browser(Tool):
             action = "clipboard"
         else:
             action = str(action or self.method or "state").strip().lower().replace("-", "_")
-        try:
-            activate_browser_model(self.agent)
-        except Exception as exc:
-            PrintStyle.warning(f"Browser model preset could not be activated: {exc}")
+        team = is_team_chat(getattr(self.agent, "context", None))
+        if not team:
+            try:
+                activate_browser_model(self.agent)
+            except Exception as exc:
+                PrintStyle.warning(f"Browser model preset could not be activated: {exc}")
         try:
             if action == "evaluate" and (not isinstance(script, str) or not script.strip()):
                 return Response(
@@ -318,7 +321,8 @@ class Browser(Tool):
                     message=f"Unknown browser action: {action}",
                     break_loop=False,
                 )
-            await self._record_history_screenshot(runtime, action, result, browser_id, calls=calls)
+            if not team:
+                await self._record_history_screenshot(runtime, action, result, browser_id, calls=calls)
         except Exception as exc:
             return Response(message=f"Browser {action} failed: {exc}", break_loop=False)
 

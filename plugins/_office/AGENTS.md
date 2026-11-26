@@ -19,6 +19,7 @@
 - Atomic writes preserve the existing file mode and owner/group; Rename and Save As inherit them from the source. Temporary files and new files from atomic writes start private (0600). Metadata failures must leave the original untouched.
 - Version backups use private files (0600) inside a process-owned private directory (0700); `ensure_dirs` also restricts existing backup directories.
 - Keep LibreOffice operations bounded to intended workspaces and artifact paths.
+- `helpers/project_office.py` handles `office_artifact` in bound team chats. Its Writer actions use the active run's project grant and project-relative file identifiers. Binary reads and revision-checked writes share the native Projects file boundary. Rendering uses templates and the byte editor, with package size limits and renewed authorization before publication.
 - Route APT commands through `system_packages.run_runtime_apt`; Kali repairs must use the build's snapshot when resolving LibreOffice/UNO dependencies.
 - Do not expose document contents or temporary files beyond intended UI/tool flows.
 - `office_artifact` reads canonical args `target_format` (export), `open_in_canvas`/`open_in_desktop` (UI intent); legacy aliases `export_format`, `open_canvas`, `open_desktop`, `open_document`, `desktop` still work. Edit operations also read legacy input kwargs: `text`/`value`/`body` for `content`, `old`/`old_text` for `find`, `new`/`new_text`/`replacement` for `replace`, `add_lines`/`append_lines` for append-content, and `edit`/`edits`/`update`/`patch` wrapper kwargs carrying the structured spec. Document only canonical args in model-facing prompts.
@@ -32,6 +33,7 @@
 ## Verification
 
 - Smoke-test creating, editing, previewing, and reconnecting office artifact sessions after changes.
+- Verify ODT and DOCX creation, read and edit from a team member chat, and verify stale revisions and access revocation preserve the project files.
 
 ## Child DOX Index
 

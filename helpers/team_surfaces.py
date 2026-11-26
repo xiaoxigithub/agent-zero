@@ -44,6 +44,7 @@ class Viewer:
     port: int
     files_fd: int
     proxy: ProjectWebProxy | None = None
+    automation_port: int = 0
     touched: float = field(default_factory=time.monotonic)
     copies: dict = field(default_factory=dict)
 
@@ -69,8 +70,6 @@ def _stop_detached_processes(uid: int):
         if not path.name.isdecimal():
             continue
         try:
-            if path.stat().st_uid != uid:
-                continue
             descriptor = os.pidfd_open(int(path.name))
             try:
                 with (path / "status").open() as stream:
@@ -112,7 +111,10 @@ def _shutdown():
 
 def _reap():
     for key, viewer in list(_viewers.items()):
-        current_project = team_access.assigned_projects(viewer.actor_id).get(viewer.project)
+        if viewer.actor_id == team_access.ADMIN_ACTOR_ID:
+            current_project = team_access.bound_project_id(viewer.project)
+        else:
+            current_project = team_access.assigned_projects(viewer.actor_id).get(viewer.project)
         expired = time.monotonic() - viewer.touched > _IDLE_SECONDS
         if current_project != viewer.project_id or viewer.process.poll() is not None or expired:
             _viewers.pop(key)
@@ -198,6 +200,7 @@ def _launch(project, project_id, actor, mode):
     file_dir = os.open(home / "Files", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     port = _local_port()
     proxy = None
+    automation_port = 0
     try:
         chrome = ""
         if mode == "browser":
@@ -206,12 +209,14 @@ def _launch(project, project_id, actor, mode):
                 raise RuntimeError("The bundled Chromium is unavailable.")
             chrome = str(candidates[-1])
             proxy = ProjectWebProxy()
+            automation_port = _local_port()
         with (directory / "viewer.log").open("wb") as log:
             process = subprocess.Popen(
                 [
                     "/usr/bin/python3", files.get_abs_path("helpers", "team_surface_sandbox.py"), mode, str(uid),
                     str(port), str(display), str(control), chrome,
                     str(proxy.server_address[1]) if proxy else "0",
+                    str(automation_port),
                 ],
                 cwd=home,
                 env={
@@ -228,7 +233,10 @@ def _launch(project, project_id, actor, mode):
             proxy.server_close()
         shutil.rmtree(directory, ignore_errors=True)
         raise
-    viewer = Viewer(uuid4().hex, project, project_id, actor, mode, directory, process, uid, display, port, file_dir, proxy)
+    viewer = Viewer(
+        uuid4().hex, project, project_id, actor, mode, directory, process,
+        uid, display, port, file_dir, proxy, automation_port,
+    )
     deadline = time.monotonic() + 15
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -267,7 +275,7 @@ def _send_path(viewer, filename):
             Path(pending.name).unlink(missing_ok=True)
 
 
-def _open(viewer, path):
+def _stage_file(viewer, path):
     parts = team_projects.file_parts(path)
     if path not in viewer.copies:
         filename = f"{uuid4().hex[:10]}-{parts[-1]}"
@@ -277,7 +285,11 @@ def _open(viewer, path):
                 receipt = team_projects.write_stream_atomic(source, target, max_bytes=FileBrowser.max_file_bytes())
                 os.chown(filename, viewer.uid, viewer.uid, dir_fd=viewer.files_fd, follow_symlinks=False)
         viewer.copies[path] = (filename, receipt["sha256"])
-    _send_path(viewer, viewer.copies[path][0])
+    return viewer.copies[path][0]
+
+
+def _open(viewer, path):
+    _send_path(viewer, _stage_file(viewer, path))
 
 
 def _save(viewer, path):
@@ -289,6 +301,33 @@ def _save(viewer, path):
         with team_projects.open_file(viewer.files_fd, filename) as source:
             result = team_projects._save_stream(target, parts[-1], source, revision, FileBrowser.max_file_bytes())
     viewer.copies[path] = (filename, result["revision"])
+
+
+def _start_viewer(project, project_id, actor, mode):
+    if len(_viewers) >= _MAX_VIEWERS:
+        raise RuntimeError("The local viewer capacity is in use.")
+    viewer = _launch(project, project_id, actor, mode)
+    _viewers[(actor, project_id, mode)] = viewer
+    _schedule_reaper()
+    return viewer
+
+
+def browser_endpoint(scope, project):
+    """Get the loopback automation endpoint for this actor's project Browser."""
+    with team_projects.project_lock(project, scope) as project_id, _lock:
+        _reap()
+        key = (scope.account_id, project_id, "browser")
+        viewer = _viewers.get(key) or _start_viewer(project, project_id, scope.account_id, "browser")
+        viewer.touched = time.monotonic()
+        return f"http://127.0.0.1:{viewer.automation_port}"
+
+
+def browser_upload_paths(scope, project, paths):
+    with team_projects.project_lock(project, scope) as project_id, _lock:
+        viewer = _viewers.get((scope.account_id, project_id, "browser"))
+        if not viewer or viewer.process.poll() is not None:
+            raise RuntimeError("Open the project Browser first.")
+        return [str(viewer.directory / "home" / "Files" / _stage_file(viewer, path)) for path in paths]
 
 
 def operation(scope, project, mode, action, path=""):
@@ -306,10 +345,7 @@ def operation(scope, project, mode, action, path=""):
         if viewer is None:
             if action == "save":
                 raise ValueError("Open the project document in Desktop first.")
-            if len(_viewers) >= _MAX_VIEWERS:
-                raise RuntimeError("The local viewer capacity is in use.")
-            viewer = _viewers[key] = _launch(project, project_id, scope.account_id, mode)
-            _schedule_reaper()
+            viewer = _start_viewer(project, project_id, scope.account_id, mode)
         viewer.touched = time.monotonic()
         if path:
             with team_projects.activity(f"surface.{mode}.{action}", scope.account_id, project_id):

@@ -23,6 +23,8 @@
 
 ## Runtime Contracts
 
+- Team conversations list, load, search, and read documentation in the current project's visible skill catalog after checking the executing account's grant.
+- `load` and `read_file` use `skill_name`. `name` is accepted for compatibility, and a composer reference such as `@[skill/writer-documents]` resolves through the same catalog. Team calls report missing names separately from unavailable skills.
 - Tool modules must define `helpers.tool.Tool` subclasses and return `helpers.tool.Response` from `execute(...)`.
 - Update this file whenever tool arguments, output shape, `break_loop` behavior, intervention handling, prompt instructions, or side effects change.
 - `SkillsTool` is a `Tool`.

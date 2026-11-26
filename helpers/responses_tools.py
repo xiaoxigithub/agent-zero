@@ -266,7 +266,7 @@ def team_tool_prompts(agent: Any) -> list[tuple[str, str]]:
         (name, agent.read_prompt(f"agent.system.tool.{name}.md") if name in {"response", "goal"}
          else files.read_file(f"prompts/team.tool.{name}.md"))
         for name in TEAM_TOOL_IDS
-        if tool_policy.resolve_tool(agent, name).allowed
+        if tool_policy.resolve_tool(agent, name).allowed and (name != "vision_load" or _vision_tool_prompt(agent))
     ]
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 
 _dispatch_run: ContextVar[TeamRun | None] = ContextVar("team_dispatch_run", default=None)
 _executing_run: ContextVar[TeamRun | None] = ContextVar("team_executing_run", default=None)
+_tool_cleanups: ContextVar[list[Callable[[], Awaitable[None]]] | None] = ContextVar("team_tool_cleanups", default=None)
 _running_tasks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
 _promoted_runs: set[str] = set()
 _running_tasks_lock = threading.Lock()
@@ -87,6 +89,13 @@ def executing_scope(context: "AgentContext") -> tuple[TeamRun, team_access.Membe
     return run, scope
 
 
+def on_tool_run_end(cleanup: Callable[[], Awaitable[None]]):
+    callbacks = _tool_cleanups.get()
+    if callbacks is None:
+        raise PermissionError("This operation needs an active team run.")
+    callbacks.append(cleanup)
+
+
 def manage_turn(context: "AgentContext", func):
     run = current_dispatch(context)
 
@@ -95,6 +104,8 @@ def manage_turn(context: "AgentContext", func):
         state = "failed"
         task = asyncio.current_task()
         execution = _executing_run.set(run)
+        cleanups = []
+        tool_scope = _tool_cleanups.set(cleanups)
         try:
             with _running_tasks_lock:
                 if task is not None:
@@ -114,6 +125,15 @@ def manage_turn(context: "AgentContext", func):
             state = "stopped"
             raise
         finally:
+            for cleanup in reversed(cleanups):
+                try:
+                    async with asyncio.timeout(5):
+                        await cleanup()
+                except asyncio.CancelledError:
+                    state = "stopped"
+                except Exception as error:
+                    PrintStyle.warning(f"Unable to release a project tool: {error}")
+            _tool_cleanups.reset(tool_scope)
             _executing_run.reset(execution)
             with _running_tasks_lock:
                 _running_tasks.pop(run.id, None)

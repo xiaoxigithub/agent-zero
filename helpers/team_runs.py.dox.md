@@ -10,6 +10,7 @@
 
 - The database owns the active run, request fingerprint, and terminal outcome. The process-local task map only locates the coroutine to cancel.
 - Every native team turn enters with a matching reservation. The coroutine saves native context state and finalizes its own run ID during teardown.
+- `on_tool_run_end()` registers asynchronous resource cleanup with the executing turn. Project Playwright connections close during its teardown.
 - `executing_scope()` revalidates the active run and its actor’s current project access before project tool operations.
 - Team queue actions require the exact active hold and the holder's current grant. The existing native queue APIs delegate here. Messages run FIFO after the current turn, or at a native intervention checkpoint when explicitly promoted. The holder alone sees pending queue text. Stop, revocation, and process restart discontinue pending work.
 - The response-only runtime has no independently surviving tool workers. An isolated tool runner must report its own exit before a future integration can release a reservation.

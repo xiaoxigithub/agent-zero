@@ -28,6 +28,8 @@
 ## Runtime Contracts
 
 - Team chat markers limit discovery and dispatch to reviewed bundled tools. Platform plugin activation and profile tool policy may further restrict the project tools and their actions.
+- The team `terminal` alias and `code_execution_tool` share the bundled code execution ID. A project command with omitted runtime uses terminal policy, and execution is limited to the supported non-interactive project runtimes.
+- In team chats, `office_artifact` policy checks the supported project Writer actions and respects plugin activation and per-action grants. Discovery uses the same action subset as dispatch.
 
 - Scoped asset precedence comes from `helpers.plugins`: active project profile,
   active project, user profile, bundled/plugin profile, then default.

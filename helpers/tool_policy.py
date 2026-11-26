@@ -217,7 +217,9 @@ def resolve_tool(
     tool_args: dict[str, Any] | None = None,
     _policy: dict[str, Any] | None = None,
 ) -> ToolPolicyDecision:
-    from helpers.team_access import TEAM_TOOL_IDS, is_team_chat
+    from helpers.team_access import (
+        TEAM_EXECUTION_RUNTIMES, TEAM_EXECUTION_TOOL_ID, TEAM_OFFICE_ACTIONS, TEAM_OFFICE_TOOL_ID, TEAM_TOOL_IDS, is_team_chat,
+    )
 
     team = is_team_chat(getattr(agent, "context", None))
     if team:
@@ -231,6 +233,14 @@ def resolve_tool(
             actions = requested_actions(team_id, tool_args if tool_args is not None else {"action": action})
             if any(value not in ("load", "save", "delete") for value in actions):
                 return ToolPolicyDecision(False, team_id, "team", "project", "Unsupported project memory action")
+        if team_id == TEAM_EXECUTION_TOOL_ID and (tool_args is not None or action is not None):
+            tool_args = {"runtime": action or "terminal", **(tool_args or {})}
+            if any(value not in TEAM_EXECUTION_RUNTIMES for value in requested_actions(team_id, tool_args)):
+                return ToolPolicyDecision(False, team_id, "team", "project", "Unsupported project execution runtime")
+        if team_id == TEAM_OFFICE_TOOL_ID and (tool_args is not None or action is not None):
+            actions = requested_actions(team_id, tool_args if tool_args is not None else {"action": action})
+            if any(value not in TEAM_OFFICE_ACTIONS for value in actions):
+                return ToolPolicyDecision(False, team_id, "team", "project", "Unsupported project Office action")
     if canonical_id:
         tool_id = canonical_id
         spec = BUNDLED_ACTIONS.get(tool_id)
@@ -269,6 +279,10 @@ def resolve_tool(
         )
         if team and discovery and tool_id == MEMORY_TOOL_ID:
             actions.remove("forget")
+        if team and discovery and tool_id == TEAM_EXECUTION_TOOL_ID:
+            actions = list(TEAM_EXECUTION_RUNTIMES)
+        if team and discovery and tool_id == TEAM_OFFICE_TOOL_ID:
+            actions = list(TEAM_OFFICE_ACTIONS)
         decisions = [
             _resolve_policy_ids(policy, tool_id, policy_ids | {action_policy_id(tool_id, value)})
             for value in actions
